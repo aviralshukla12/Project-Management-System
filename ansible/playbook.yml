@@ -1,0 +1,155 @@
+---
+- name: Deploy MERN Application
+  hosts: mern_servers
+  become: yes
+  
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - git
+          - curl
+        state: present
+
+    - name: Install Node.js 18.x
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+        apt-get install -y nodejs
+      args:
+        creates: /usr/bin/node
+
+    - name: Install MongoDB
+      block:
+        - name: Import MongoDB GPG key
+          apt_key:
+            url: https://www.mongodb.org/static/pgp/server-7.0.asc
+            state: present
+
+        - name: Add MongoDB repository
+          apt_repository:
+            repo: "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse"
+            state: present
+
+        - name: Install MongoDB
+          apt:
+            name: mongodb-org
+            state: present
+            update_cache: yes
+
+        - name: Start MongoDB
+          systemd:
+            name: mongod
+            state: started
+            enabled: yes
+
+    - name: Clone application repository
+      git:
+        repo: 'https://github.com/aviralshukla12/Project-Management-System.git'
+        dest: /home/ubuntu/mern-app
+        version: main
+        force: yes
+      become_user: ubuntu
+
+    - name: Install backend dependencies
+      npm:
+        path: /home/ubuntu/mern-app/Backend
+      become_user: ubuntu
+
+    - name: Create backend .env file
+      copy:
+        dest: /home/ubuntu/mern-app/Backend/.env
+        content: |
+          PORT=5000
+          MONGODB_URI=mongodb://localhost:27017/taskmanagement
+          NODE_ENV=production
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Install frontend dependencies
+      npm:
+        path: /home/ubuntu/mern-app/Frontend
+      become_user: ubuntu
+
+    - name: Build React frontend
+      command: npm run build
+      args:
+        chdir: /home/ubuntu/mern-app/Frontend
+      become_user: ubuntu
+
+    - name: Create systemd service for backend
+      copy:
+        dest: /etc/systemd/system/mern-backend.service
+        content: |
+          [Unit]
+          Description=MERN Backend
+          After=network.target mongod.service
+
+          [Service]
+          Type=simple
+          User=ubuntu
+          WorkingDirectory=/home/ubuntu/mern-app/Backend
+          ExecStart=/usr/bin/node index.js
+          Restart=on-failure
+          Environment=NODE_ENV=production
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start backend service
+      systemd:
+        name: mern-backend
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Configure Nginx
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          server {
+              listen 80;
+              server_name _;
+
+              # Frontend
+              location / {
+                  root /home/ubuntu/mern-app/Frontend/dist;
+                  try_files $uri $uri/ /index.html;
+              }
+
+              # Backend API
+              location /api {
+                  proxy_pass http://localhost:5000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection 'upgrade';
+                  proxy_set_header Host $host;
+                  proxy_cache_bypass $http_upgrade;
+              }
+          }
+
+    - name: Test Nginx configuration
+      command: nginx -t
+
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted
+        enabled: yes
+
+    - name: Display deployment info
+      debug:
+        msg: |
+          ========================================
+          ✅ Deployment Complete!
+          ========================================
+          Frontend: http://3.88.159.42
+          Backend API: http://3.88.159.42/api
+          
+          To check logs:
+          sudo journalctl -u mern-backend -f
+          ========================================
